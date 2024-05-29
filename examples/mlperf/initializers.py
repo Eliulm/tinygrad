@@ -2,7 +2,7 @@ import math
 from typing import Union, Tuple
 
 from tinygrad import Tensor, nn, dtypes
-from tinygrad.helpers import prod, argfix
+from tinygrad.helpers import prod, argfix, getenv
 
 # rejection sampling truncated randn
 def rand_truncn(*shape, dtype=None, truncstds=2, **kwargs) -> Tensor:
@@ -41,7 +41,10 @@ class LinearBert(nn.Linear):
     self.bias = Tensor.zeros(out_features, dtype=dtypes.float32) if bias else None
   
   def __call__(self, x:Tensor):
-    return x.linear(self.weight.cast(dtypes.default_float).transpose(), self.bias.cast(dtypes.default_float) if self.bias is not None else None)
+    x = x.cast(dtypes.half if getenv("HALF_MATMUL", False) else dtypes.default_float)
+    self.weight = self.weight.cast(dtypes.half if getenv("HALF_MATMUL", False) else dtypes.default_float)
+    self.bias = self.bias.cast(dtypes.half if getenv("HALF_MATMUL", False) else dtypes.default_float) if self.bias is not None else None
+    return x.linear(self.weight.transpose(), self.bias)
 
 class EmbeddingBert(nn.Embedding):
   def __init__(self, vocab_size:int, embed_size:int, std=0.02):
