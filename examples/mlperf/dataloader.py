@@ -1,6 +1,7 @@
 import os, random, pickle, functools, itertools
 from typing import List, Tuple
 from pathlib import Path
+from itertools import zip_longest
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
@@ -165,10 +166,7 @@ def batch_load_resnet(batch_size=64, val=False, shuffle=True, seed=None, pad_fir
       # happens with BENCHMARK set
       pass
 
-@functools.lru_cache(maxsize=128)
-def load_bert_file(fn:str) -> List[dict]:
-  with open(fn, "rb") as f: data = pickle.load(f)
-  return data
+### BERT
 
 def process_batch_bert(data: List[dict]) -> dict[str, Tensor]:
   return {
@@ -181,62 +179,55 @@ def process_batch_bert(data: List[dict]) -> dict[str, Tensor]:
     "next_sentence_labels": Tensor(np.concatenate([s["next_sentence_labels"] for s in data], axis=0), dtype=dtypes.float32),
   }
 
-def shuffle_parts(file_paths: List[str]) -> List[str]:
-  parts = {}
-  for f in file_paths:
-    part = Path(f).stem.split('_')[0]
-    if part not in parts: parts[part] = []
-    parts[part].append(f)
-  
-  part_ids = list(parts.keys())
-  random.shuffle(part_ids)
+def load_file(file: str):
+  with open(file, "rb") as f:
+    return pickle.load(f)
 
-  shuffled_files = []
-  for p in part_ids:
-    parts[p].sort(key=lambda x: int(Path(x).stem.split('_')[1]))
-    shuffled_files.extend(parts[p])
-  return shuffled_files
+def interleave_parts(parts: List[List[dict]]):
+  return [item for sublist in zip_longest(*parts) for item in sublist if item is not None]
 
-def random_sample(data: List[str]):
-  index = random.randint(0, len(data) - 1)
-  selected_sample = data[index]
-  return selected_sample, index
-
-def load_datasample(file_and_offset:Tuple[str, int]) -> List[dict]:
-  data = load_bert_file(file_and_offset[0])
-  return data[file_and_offset[1]]
+def get_interleaved_parts(dataset: List[str], cycle_length: int):
+  cycle_length = min(cycle_length, len(dataset))
+  files, dataset = dataset[:cycle_length], dataset[cycle_length:]
+  parts = [load_file(file) for file in files]
+  return interleave_parts(parts), dataset
 
 # Reference: https://github.com/mlcommons/training/blob/1c8a098ae3e70962a4f7422c0b0bd35ae639e357/language_model/tensorflow/bert/run_pretraining.py, Line 394
 def batch_load_train_bert(BS:int, start_step:int = 0):
   from extra.datasets.wikipedia import get_wiki_train_files
-  files = shuffle_parts(get_wiki_train_files())
-  dataset = []
-  for f in tqdm(files, desc="Building dataset"):
-    lists = [(f, o) for o in range(int(Path(f).stem.split("_")[3].split(".")[0]))]
-    dataset.extend(lists)
-  
-  dataset = dataset[start_step:]
-  
-  active_set = deque(dataset[:1000])
-  remaining_set = deque(dataset[1000:])
+  random.shuffle(dataset := get_wiki_train_files())
+  cycle_length = min(getenv("NUM_CPU_THREADS", min(os.cpu_count(), 8)), len(dataset))
 
+  interleaved, dataset = get_interleaved_parts(dataset, cycle_length)
+  buffer = deque(interleaved[:1000])
+  remaining_interleaved = deque(interleaved[1000:])
+
+  batch, wait = [], False
   while dataset:
-    blob = []
-    for _ in range(BS):
-      if active_set:
-        index = random.randint(0, len(active_set) - 1)
-        sample = active_set[index]
-        active_set.remove(sample)
-        blob.append(sample)
-        if remaining_set:
-            active_set.append(remaining_set.popleft())
-    yield process_batch_bert([load_datasample(sample) for sample in blob])
+    if wait: 
+      new_interleaved, dataset = get_interleaved_parts(dataset, cycle_length)
+      remaining_interleaved = deque(new_interleaved)
+      buffer.append(remaining_interleaved.popleft())
+      wait = False
+    while remaining_interleaved:
+      for _ in range(BS - len(batch)):
+        index = random.randint(0, 999)
+        buffer.remove(buffer[index])
+        batch.append(buffer[index])
+        if remaining_interleaved:
+          buffer.append(remaining_interleaved.popleft())
+        else:
+          wait = True
+          break
+
+      if not wait:
+        yield process_batch_bert(batch)
+        batch= []
 
 # Reference: https://github.com/mlcommons/training/blob/1c8a098ae3e70962a4f7422c0b0bd35ae639e357/language_model/tensorflow/bert/run_pretraining.py, Line 416
 def batch_load_val_bert(BS:int):
-  from extra.datasets.wikipedia import get_wiki_val_files
-  files = get_wiki_val_files()
-  dataset = list(itertools.chain.from_iterable([load_bert_file(f) for f in files]))
+  file =  getenv("BASEDIR", Path(__file__).parent.parents[1] / "extra" / "datasets" / "wiki") / "eval.pkl"
+  dataset = load_file(file)
   idx = 0
   while True:
     start_idx = (idx * BS) % len(dataset)
@@ -246,6 +237,8 @@ def batch_load_val_bert(BS:int):
     else:  # wrap around the end to the beginning of the dataset
         yield process_batch_bert(dataset[start_idx:] + dataset[:end_idx])
     idx += 1
+
+### UNET3D
 
 def load_unet3d_data(preprocessed_dataset_dir, seed, queue_in, queue_out, X:Tensor, Y:Tensor):
   from extra.datasets.kits19 import rand_balanced_crop, rand_flip, random_brightness_augmentation, gaussian_noise
