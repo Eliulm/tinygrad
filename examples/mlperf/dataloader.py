@@ -212,8 +212,9 @@ def batch_load_train_bert(BS:int, start_step:int = 0):
     while remaining_interleaved:
       for _ in range(BS - len(batch)):
         index = random.randint(0, 999)
-        buffer.remove(buffer[index])
-        batch.append(buffer[index])
+        sample = buffer[index]
+        batch.append(sample)
+        del buffer[index]
         if remaining_interleaved:
           buffer.append(remaining_interleaved.popleft())
         else:
@@ -222,7 +223,7 @@ def batch_load_train_bert(BS:int, start_step:int = 0):
 
       if not wait:
         yield process_batch_bert(batch)
-        batch= []
+        batch = []
 
 # Reference: https://github.com/mlcommons/training/blob/1c8a098ae3e70962a4f7422c0b0bd35ae639e357/language_model/tensorflow/bert/run_pretraining.py, Line 416
 def batch_load_val_bert(BS:int):
