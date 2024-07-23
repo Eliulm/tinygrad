@@ -182,15 +182,6 @@ def load_file(file: str):
   with open(file, "rb") as f:
     return pickle.load(f)
 
-def interleave_parts(parts: List[List[dict]]):
-  return [item for sublist in zip_longest(*parts) for item in sublist if item is not None]
-
-def get_interleaved_parts(dataset: List[str], cycle_length: int):
-  cycle_length = min(cycle_length, len(dataset))
-  files, dataset = dataset[:cycle_length], dataset[cycle_length:]
-  parts = [load_file(file) for file in files]
-  return interleave_parts(parts), dataset
-
 class InterleavedDataset:
   def __init__(self, files:List[str], cycle_length:int, start_sample:int=0):
     self.fast_forward(start_sample, cycle_length, files)
@@ -261,9 +252,9 @@ def batch_load_val_bert(BS:int):
     start_idx = (idx * BS) % len(dataset)
     end_idx = ((idx + 1) * BS) % len(dataset)
     if start_idx < end_idx:
-        yield process_batch_bert(dataset[start_idx:end_idx])
+      yield process_batch_bert(dataset[start_idx:end_idx])
     else:  # wrap around the end to the beginning of the dataset
-        yield process_batch_bert(dataset[start_idx:] + dataset[:end_idx])
+      yield process_batch_bert(dataset[start_idx:] + dataset[:end_idx])
     idx += 1
 
 ### UNET3D
