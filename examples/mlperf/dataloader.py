@@ -198,16 +198,25 @@ def batch_load_train_bert(BS:int, start_step:int = 0):
   random.shuffle(dataset := get_wiki_train_files())
   cycle_length = min(getenv("NUM_CPU_THREADS", min(os.cpu_count(), 8)), len(dataset))
 
+  batch, wait = [], False
   interleaved, dataset = get_interleaved_parts(dataset, cycle_length)
+
+  # Fast forward
+  while (length := len(interleaved)) <= start_step*BS:
+    interleaved, dataset = get_interleaved_parts(dataset, cycle_length)
+    length += len(interleaved)
+  interleaved = interleaved[start_step*BS:]
+  if length < 1000: wait = True
+
   buffer = deque(interleaved[:1000])
   remaining_interleaved = deque(interleaved[1000:])
 
-  batch, wait = [], False
   while dataset:
     if wait: 
       new_interleaved, dataset = get_interleaved_parts(dataset, cycle_length)
       remaining_interleaved = deque(new_interleaved)
-      buffer.append(remaining_interleaved.popleft())
+      while len(buffer) < 1000:
+        buffer.append(remaining_interleaved.popleft())
       wait = False
     while remaining_interleaved:
       for _ in range(BS - len(batch)):
