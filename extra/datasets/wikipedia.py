@@ -353,6 +353,7 @@ def process_part(part:int):
   tokenizer = Tokenizer(getenv("BASEDIR", Path(__file__).parent / "wiki") / "vocab.txt")
   os.makedirs(BASEDIR / "train", exist_ok=True)
 
+  if os.path.exists(BASEDIR / f"train/{str(part)}.pkl"): return
   features = get_features_from_part(tokenizer, val=False, part=part)
   with open(BASEDIR / f"train/{str(part)}.pkl", "wb") as f:
     pickle.dump(features, f)
