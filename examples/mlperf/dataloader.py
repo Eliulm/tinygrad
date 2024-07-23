@@ -1,5 +1,5 @@
-import os, random, pickle, functools, itertools
-from typing import List, Tuple
+import os, random, pickle, queue, math
+from typing import List
 from pathlib import Path
 from itertools import zip_longest
 import numpy as np
@@ -7,8 +7,7 @@ from PIL import Image
 from tqdm import tqdm
 from tinygrad import dtypes, Tensor
 from tinygrad.helpers import getenv, prod, Context, round_up
-from collections import deque
-from multiprocessing import Queue, Process, shared_memory, connection, Lock, cpu_count, Pool
+from multiprocessing import Queue, Process, shared_memory, connection, Lock, cpu_count
 
 class MyQueue:
   def __init__(self, multiple_readers=True, multiple_writers=True):
@@ -192,47 +191,66 @@ def get_interleaved_parts(dataset: List[str], cycle_length: int):
   parts = [load_file(file) for file in files]
   return interleave_parts(parts), dataset
 
+class InterleavedDataset:
+  def __init__(self, files:List[str], cycle_length:int, start_sample:int=0):
+    self.fast_forward(start_sample, cycle_length, files)
+  
+  def fast_forward(self, start_sample:int, cycle_length:int, files: List[str]):
+    self.cycle_length = cycle_length
+    queue_state = [load_file(files[i]) for i in range(cycle_length)]
+    seen = {i: files[i] for i in range(self.cycle_length)}
+
+    start_queue_pointer = start_sample % self.cycle_length
+    rr_count = math.ceil(start_sample / self.cycle_length)
+
+    for i in range(cycle_length):
+      queue_length, within_queue_part_index = len(queue_state[i]), 1
+      while queue_length <= rr_count+1:
+        seen[i+cycle_length*within_queue_part_index] = (file := files[i+cycle_length*within_queue_part_index])
+        parts = load_file(file)
+        queue_length += len(parts)
+        within_queue_part_index += 1
+        queue_state[i].extend(parts)
+      queue_state[i] = queue_state[i][rr_count:]
+
+    self.queues = [queue.Queue() for _ in range(self.cycle_length)]
+    [q.put(datasample) for q, state in zip(self.queues, queue_state) for datasample in state]
+    self.dataset = [f for f in files if not f in seen.values()]
+    self.seen = seen
+    self.queue_pointer = start_queue_pointer
+
+  def get(self):
+    # Round robin across queues
+    try:
+      return self.queues[self.queue_pointer].get()
+    except IndexError:
+      self.fill(self.queue_pointer)
+      return self.queues[self.queue_pointer].get()
+    finally:
+      self.queue_pointer = (self.queue_pointer + 1) % self.cycle_length
+  
+  def fill(self, queue_index: int):
+    if not self.dataset: self.dataset = self.seen # Wrap around
+    file = self.dataset.pop(0)
+    self.seen.append(file)
+    self.queues[queue_index].queue.extend(load_file(file))
+
 # Reference: https://github.com/mlcommons/training/blob/1c8a098ae3e70962a4f7422c0b0bd35ae639e357/language_model/tensorflow/bert/run_pretraining.py, Line 394
-def batch_load_train_bert(BS:int, start_step:int = 0):
+def batch_load_train_bert(BS:int, start_step:int=0):
   from extra.datasets.wikipedia import get_wiki_train_files
-  random.shuffle(dataset := get_wiki_train_files())
-  cycle_length = min(getenv("NUM_CPU_THREADS", min(os.cpu_count(), 8)), len(dataset))
+  random.shuffle(train_files := get_wiki_train_files())
+  cycle_length = min(getenv("NUM_CPU_THREADS", min(os.cpu_count(), 8)), len(train_files))
+  assert cycle_length > 0, "cycle_length must be greater than 0"
 
-  batch, wait = [], False
-  interleaved, dataset = get_interleaved_parts(dataset, cycle_length)
-
-  # Fast forward
-  while (length := len(interleaved)) <= start_step*BS:
-    interleaved, dataset = get_interleaved_parts(dataset, cycle_length)
-    length += len(interleaved)
-  interleaved = interleaved[start_step*BS:]
-  if length < 1000: wait = True
-
-  buffer = deque(interleaved[:1000])
-  remaining_interleaved = deque(interleaved[1000:])
-
-  while dataset:
-    if wait: 
-      new_interleaved, dataset = get_interleaved_parts(dataset, cycle_length)
-      remaining_interleaved = deque(new_interleaved)
-      while len(buffer) < 1000:
-        buffer.append(remaining_interleaved.popleft())
-      wait = False
-    while remaining_interleaved:
-      for _ in range(BS - len(batch)):
-        index = random.randint(0, 999)
-        sample = buffer[index]
-        batch.append(sample)
-        del buffer[index]
-        if remaining_interleaved:
-          buffer.append(remaining_interleaved.popleft())
-        else:
-          wait = True
-          break
-
-      if not wait:
-        yield process_batch_bert(batch)
-        batch = []
+  dataset = InterleavedDataset(train_files, cycle_length, start_step*BS)
+  buffer = [dataset.get() for _ in range(1000)]
+  while True:
+    batch = []
+    for _ in range(BS):
+      index = random.randint(0, 999) # Buffer shuffle
+      batch.append(buffer[index])
+      buffer[index] = dataset.get()
+    yield process_batch_bert(batch)
 
 # Reference: https://github.com/mlcommons/training/blob/1c8a098ae3e70962a4f7422c0b0bd35ae639e357/language_model/tensorflow/bert/run_pretraining.py, Line 416
 def batch_load_val_bert(BS:int):
