@@ -207,8 +207,8 @@ class InterleavedDataset:
     
     self.queues = [queue.Queue() for _ in range(self.cycle_length)]
     # Cut out prev seen samples in topic
-    start_idxs = [queue_lengths[i] - rr_count if start_queue_pointer <= i else queue_lengths[i] - rr_count-1 for i in range(self.cycle_length)]
-    [q.put(datasample) for q, state in zip(self.queues, [load_file(f)[start_idxs[idx]:] for idx, f in enumerate(active_topics)]) for datasample in state]
+    cut_off = [rr_count if start_queue_pointer <= i else rr_count+1 for i in range(self.cycle_length)]
+    [self.queues[i].extend(load_file(f)[cut_off[i]:]) for i, f in enumerate(active_topics)] 
     self.queue_pointer = start_queue_pointer
 
   def get(self):
