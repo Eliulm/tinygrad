@@ -353,9 +353,9 @@ def process_part(part:int):
   tokenizer = Tokenizer(getenv("BASEDIR", Path(__file__).parent / "wiki") / "vocab.txt")
   os.makedirs(BASEDIR / "train", exist_ok=True)
 
-  if os.path.exists(BASEDIR / f"train/{str(part)}.pkl"): return
+  if any((BASEDIR / "train").glob(f"{str(part)}_*.pkl")): return
   features = get_features_from_part(tokenizer, val=False, part=part)
-  with open(BASEDIR / f"train/{str(part)}.pkl", "wb") as f:
+  with open(BASEDIR / f"train/{str(part)}_{len(features)}.pkl", "wb") as f:
     pickle.dump(features, f)
 
 def get_features_from_part(tokenizer:Tokenizer, val:bool=False, part:int=0) -> list[dict]: # Convert raw text to masked NSP samples

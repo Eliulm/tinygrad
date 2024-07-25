@@ -186,32 +186,33 @@ class InterleavedDataset:
   def __init__(self, files:List[str], cycle_length:int, start_sample:int=0):
     self.fast_forward(start_sample, cycle_length, files)
 
-  def fast_forward(self, start_sample:int, cycle_length:int, files: List[str]):
+  def fast_forward(self, start_sample:int, cycle_length:int, files:List[str]):
     self.cycle_length = cycle_length
-    queue_state = [load_file(files[i]) for i in range(cycle_length)]
-    seen = {i: files[i] for i in range(self.cycle_length)}
-
+    self.dataset = files
     start_queue_pointer = start_sample % self.cycle_length
     rr_count = math.ceil(start_sample / self.cycle_length)
 
-    for i in range(cycle_length):
-      queue_length, within_queue_part_index = len(queue_state[i]), 1
-      while queue_length <= rr_count+1:
-        seen[i+cycle_length*within_queue_part_index] = (file := files[i+cycle_length*within_queue_part_index])
-        parts = load_file(file)
-        queue_length += len(parts)
-        within_queue_part_index += 1
-        queue_state[i].extend(parts)
-      queue_state[i] = queue_state[i][rr_count:]
+    # Add the first round of topics
+    queue_lengths = [int(files[i].split("_")[1]) for i in range(self.cycle_length)]
+    active_topics = [files[i] for i in range(self.cycle_length)]
+    self.seen = [self.dataset.pop(0) for _ in range(cycle_length)]
 
+    # Iterate over the topics until each queue has more samples to cover the next round-robin
+    while any([queue_lengths[i] < rr_count for i in range(self.cycle_length)]):
+      min_queue_idx = queue_lengths.index(min(queue_lengths))
+      next_topic = self.dataset.pop(0)
+      self.seen.append(next_topic)
+      queue_lengths[min_queue_idx] += int(next_topic.split("_")[1])
+      active_topics[min_queue_idx] = next_topic
+    
     self.queues = [queue.Queue() for _ in range(self.cycle_length)]
-    [q.put(datasample) for q, state in zip(self.queues, queue_state) for datasample in state]
-    self.dataset = [f for f in files if not f in seen.values()]
-    self.seen = list(seen.values())
+    # Cut out prev seen samples in topic
+    start_idxs = [queue_lengths[i] - rr_count if start_queue_pointer <= i else queue_lengths[i] - rr_count-1 for i in range(self.cycle_length)]
+    [q.put(datasample) for q, state in zip(self.queues, [load_file(f)[start_idxs[idx]:] for idx, f in enumerate(active_topics)]) for datasample in state]
     self.queue_pointer = start_queue_pointer
 
   def get(self):
-    # Round robin across queues
+    # Round-robin across queues
     try:
       return self.queues[self.queue_pointer].get_nowait()
     except queue.Empty:
