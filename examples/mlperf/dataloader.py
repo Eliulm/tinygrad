@@ -185,7 +185,7 @@ def load_file(file: str):
 class InterleavedDataset:
   def __init__(self, files:List[str], cycle_length:int, start_sample:int=0):
     self.fast_forward(start_sample, cycle_length, files)
-  
+
   def fast_forward(self, start_sample:int, cycle_length:int, files: List[str]):
     self.cycle_length = cycle_length
     queue_state = [load_file(files[i]) for i in range(cycle_length)]
@@ -207,21 +207,23 @@ class InterleavedDataset:
     self.queues = [queue.Queue() for _ in range(self.cycle_length)]
     [q.put(datasample) for q, state in zip(self.queues, queue_state) for datasample in state]
     self.dataset = [f for f in files if not f in seen.values()]
-    self.seen = seen
+    self.seen = list(seen.values())
     self.queue_pointer = start_queue_pointer
 
   def get(self):
     # Round robin across queues
     try:
-      return self.queues[self.queue_pointer].get()
-    except IndexError:
+      return self.queues[self.queue_pointer].get_nowait()
+    except queue.Empty:
       self.fill(self.queue_pointer)
-      return self.queues[self.queue_pointer].get()
+      return self.queues[self.queue_pointer].get_nowait()
     finally:
       self.queue_pointer = (self.queue_pointer + 1) % self.cycle_length
   
   def fill(self, queue_index: int):
-    if not self.dataset: self.dataset = self.seen # Wrap around
+    if not self.dataset: 
+      self.dataset = self.seen # Wrap around
+      self.seen = []
     file = self.dataset.pop(0)
     self.seen.append(file)
     self.queues[queue_index].queue.extend(load_file(file))
