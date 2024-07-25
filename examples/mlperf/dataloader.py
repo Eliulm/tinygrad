@@ -193,22 +193,22 @@ class InterleavedDataset:
     rr_count = math.ceil(start_sample / self.cycle_length)
 
     # Add the first round of topics
-    queue_lengths = [int(files[i].split("_")[1]) for i in range(self.cycle_length)]
+    queue_lengths = [int(files[i].stem.split("_")[-1]) for i in range(self.cycle_length)]
     active_topics = [files[i] for i in range(self.cycle_length)]
-    self.seen = [self.dataset.pop(0) for _ in range(cycle_length)]
+    self.seen = [self.dataset.pop(0) for _ in range(self.cycle_length)]
 
     # Iterate over the topics until each queue has more samples to cover the next round-robin
     while any([queue_lengths[i] < rr_count for i in range(self.cycle_length)]):
       min_queue_idx = queue_lengths.index(min(queue_lengths))
       next_topic = self.dataset.pop(0)
       self.seen.append(next_topic)
-      queue_lengths[min_queue_idx] += int(next_topic.split("_")[1])
+      queue_lengths[min_queue_idx] += int(next_topic.stem.split("_")[-1])
       active_topics[min_queue_idx] = next_topic
     
     self.queues = [queue.Queue() for _ in range(self.cycle_length)]
     # Cut out prev seen samples in topic
     cut_off = [rr_count if start_queue_pointer <= i else rr_count+1 for i in range(self.cycle_length)]
-    [self.queues[i].extend(load_file(f)[cut_off[i]:]) for i, f in enumerate(active_topics)] 
+    [self.queues[i].queue.extend(load_file(f)[cut_off[i]:]) for i, f in enumerate(active_topics)] 
     self.queue_pointer = start_queue_pointer
 
   def get(self):
